@@ -18,13 +18,13 @@ INITIAL DATA REVIEW:
 
 INITIAL DATA PLOTTING:
 
-	- most logins occur between 5 AM and 6 PM with session times varying between 1 to < 100 	minutes 
+	- most logins occur between 5 AM and 6 PM with session times varying between 1 to < 100 minutes 
 	- users from TX_all (location) dominate longer session times
 	- fewer login sessions occur during weekends, and are normally shorter 
 	- whether it be weekday or weekend, longer login times come from TX_all
 	- longer session times are fewer on Saturdays and Sundays
 	- shorter and fewer login session times come from users working for pipeline section  
-	- in comparison to other sections (except pipeline), users from IT section have fewer long 	session times
+	- in comparison to other sections (except pipeline), users from IT section have fewer long session times
 	- users from pipeline section normally login between 6 AM and 3 PM  
 	- users from IT section normally login between 5 AM and 5 PM
 	- users from other departments login anytime between zero and 24 hrs
@@ -32,16 +32,16 @@ INITIAL DATA PLOTTING:
 
 KNN ANALYSIS - RESULTS:
 
-KNN (3 trees & including user’s section) – 76% accuracy in predicting user location 
-KNN (3 trees & excluding user’s section) - 76% accuracy in predicting user location
-KNN (5 trees & including user’s section) – 75% accuracy in predicting user location
+	- KNN (3 trees & including user’s section) – 76% accuracy in predicting user location 
+	- KNN (3 trees & excluding user’s section) - 76% accuracy in predicting user location
+	- KNN (5 trees & including user’s section) – 75% accuracy in predicting user location
 
 DECISION TREES – RESULTS:
 
-Random forest model (5 trees) – 69.8% accuracy in predicting user location
-Random forest model (40 trees) – 70.8% accuracy in predicting user location
-Random forest model (100 trees) – 71.1% accuracy in predicting user location
-	- Variable importance plot shows that weekend_num (i.e., if user logged in during weekdays or 	weekend) had the least effect in determining the user’s location
+	- Random forest model (5 trees) – 69.8% accuracy in predicting user location
+	- Random forest model (40 trees) – 70.8% accuracy in predicting user location
+	- Random forest model (100 trees) – 71.1% accuracy in predicting user location
+		- Variable importance plot shows that weekend_num (i.e., if user logged in during weekdays or 	weekend) had the least effect in determining the 		user’s location
 
 NULL HYPOTHESIS TESTING OF MEAN LOGIN TIMES - RESULTS:
 
