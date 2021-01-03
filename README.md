@@ -45,14 +45,14 @@ DECISION TREES – RESULTS:
 
 NULL HYPOTHESIS TESTING OF MEAN LOGIN TIMES - RESULTS:
 
-Did the difference in mean login times between users based in TX and LA happen by chance?
-	- Mean login time for users based in LA = 24.32 mins
-	- Mean login time for users based in TX = 30.1 mins
-	- Welch Two Sample t-test:
-		- t-value = -18.6, i.e., the difference in means is ~18 times larger than would be expected 		by chance 
-		- How often would a result this big happen if the null hypothesis were actually true?
-			- Because, p < 2.2e-16; i.e., at least 2.2*10-14 % of the time
-			- This is sufficient to reject the NULL hypothesis. Thus, the difference in means of session times between TX and LA users didn’t happen by chance.
-Cohen’s d-test:
-	- d-estimate = -0.26 (tells us that the sample effect size is small)
-	- 95% confident that the true effect size is somewhere between small and very small
+	- Did the difference in mean login times between users based in TX and LA happen by chance?
+		- Mean login time for users based in LA = 24.32 mins
+		- Mean login time for users based in TX = 30.1 mins
+		- Welch Two Sample t-test:
+			- t-value = -18.6, i.e., the difference in means is ~18 times larger than would be expected 		by chance 
+			- How often would a result this big happen if the null hypothesis were actually true?
+				- Because, p < 2.2e-16; i.e., at least 2.2*10-14 % of the time
+				- This is sufficient to reject the NULL hypothesis. Thus, the difference in means of session times between TX and LA users didn’t happen by chance
+		- Cohen’s d-test:
+			- d-estimate = -0.26 (tells us that the sample effect size is small)
+			- 95% confident that the true effect size is somewhere between small and very small
