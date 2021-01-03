@@ -1,0 +1,354 @@
+---
+title: "Initial data analysis - Project 3"
+output: html_document
+author: Saibal Bhattacharya
+---
+
+**Prework: Load the CSV file and libraries.**  
+```{r}
+library(tidyverse)
+library(data.table)
+library(hrbrthemes)
+library(lubridate)
+library(chron)
+library(data.table)
+library(ggplot2)
+library(repr)
+library(dplyr)
+library(caret)
+df1 <- read.csv("PROJECT3_DATA.csv")
+
+# Set the initial plot area dimensions
+options(repr.plot.width=4, repr.plot.height=4)
+```
+
+**Given this data, is it possible to predict what user group and/or location a user is tied to based on login time and session duration?**  
+
+```{r}
+#---------------------- Initial review of data -----------------------------
+
+#Check class of object
+class(df1)
+
+#Check mode of object, i.e., how an object is stored in memory (numeric, character, list and function)
+mode(df1)
+
+#Check data summary
+summary(df1)
+```
+**Observation:**
+All columns except maxsessionuid are character - maxsessionuid is numeric.
+
+```{r}
+#view data table
+#View(df1)
+```
+**Observation:**
+Maxsessionid - no NA or missing values present
+
+```{r}
+#check types of jobtitles (groupname) and their locations (defsite)
+table(df1$defsite)
+```
+**Observation:**
+LA & LA_PIPE and TX & TA_PIPE make up vast majority of data
+OK_PIPE has only 37 cases - insufficient to train and test
+Need to remove OK_PIPE to reduce imbalance
+
+```{r}
+#keep only unique rows - How many unique userids are present?
+#keep_all = TRUE - will keep all columns
+df2 <- df1 %>% distinct(userid, .keep_all = TRUE)
+
+#summarize unique no of users under title "no_of_unique_users"
+df2 %>% summarise(no_of_unique_users = n())
+```
+**Observation:**
+There are 572 unique userids
+
+```{r}
+#extracting distinct maxsessionuid
+#Expectation: 1st mention of a maxsessionuid should be a LOGIN
+#So under attemptresult one should only see LOGINs
+df3 <- df1 %>% distinct(maxsessionuid, .keep_all = TRUE)
+
+#Find number of maxsessionuid that are not tied to a LOGIN
+table(df3$attemptresult)
+```
+**Observation:**
+There are 25392 LOGINs, 1 RESTART, and 4 SYSLOGOUT
+
+```{r}
+#------------------------- Initial data cleanup ----------------
+#Cleaning up dataset - removing SYSLOGOUTs (as per advice from client)
+df4 <- df1 %>% filter(attemptresult != "SYSLOGOUT")
+
+#Convert to data table (DT)
+df5 <- setDT(df4)
+
+#Order by sessionID and then by my_time
+df6 <- df5 %>% arrange(maxsessionuid, attemptdate)
+nrow(df6)
+
+#Remove duplicate rows
+df6b <- unique( df6[ , 1:7 ] )
+nrow(df6b)
+
+# add an 'order' column, which is a sequence from 1 to N, i.e., length() for each sessionID 
+df7 <- df6b[, order := seq(1:.N), by=maxsessionuid]
+table(df7$order)
+
+```
+**Observation:**
+There are 25393 cases of order = 1, and 25320 cases of order = 2.
+There are 34 cases of order = 3 and 21 cases of order = 4.
+For order = 4, same user has logged under different grpname at same time.
+
+Ideally, each sessionID should have a LOGIN and a LOGOUT/RESTART/TIMEOUT
+For each sessionID, LOGINs should have order = 1, and vast majority of LOGINs do have that
+For each sessionID, LOGOUT/RESTART/TIMEOUT should have order = 2. Order = 2 is mostly for LOGOUT and TIMEOUT. 
+In a small minority of cases we have order = 3 and 4
+
+```{r}
+table(df7$order, df7$attemptresult)
+
+# Building file with only LOGINs
+df7_login <- df7[attemptresult == "LOGIN"]
+table(df7_login$attemptresult)
+
+# Build file with only different types of LOGOUT including: LOGOUT, TIMEOUT, and RESTART
+df7_logout <- df7[attemptresult == "LOGOUT" | attemptresult == "TIMEOUT" | attemptresult == "RESTART"]
+table(df7_logout$attemptresult)
+
+# assuming LOGOUT, RESTART, and TIMEOUT will always happen after LOGIN for a sessionID
+# So shift the 'order' number for LOGOUT, TIMEOUT, and RESTART back by 1 
+# So that it matches 'order' number of LOGIN
+# But subtracting 1 where LOGOUT, TIMEOUT, and RESTART = 1 will make it zero - so dt_logout should only have zero values. 
+df7_logout[, order := order - 1]
+table(df7_logout$attemptresult, df7_logout$order)
+
+```
+**Observation:**
+Most order values are 1, but there are some order = 2 and 3 present
+
+```{r}
+# Join tables on sessionID, order number, type, userid, defsite, and groupname 
+# Columns to keep - sessionID, order, type, userid, defsite, groupname, and attemptdate 
+# Use NA if attemptdate not present in dt_login or dt_logout
+df8 <- df7_login[, .(maxsessionuid, order, type, userid, defsite, groupname, attemptdate)][df7_logout[, .(maxsessionuid, order, type, userid, defsite, groupname, attemptdate)],on = c("maxsessionuid", "order", "type", "userid", "defsite", "groupname"), nomatch=NA]
+table(df8$order)
+
+```
+**Observation:**
+Vast majority of cases are for order = 1
+As expected, 25296 cases for order = 1, 34 for order = 2, and 21 for order = 3
+
+```{r}
+# rename columns
+df9 <- setnames(df8, c("attemptdate", "i.attemptdate"), c("LOGIN_time", "Out_time"))
+
+#check number of NAs in LOGIN column
+sum(is.na(df9$LOGIN_time))
+
+```
+**Observation:** 
+There are 57 NAs in LOGIN_time
+
+```{r}
+#remove all rows where LOGIN_time = NA
+df10 <- df9[!is.na(df9$LOGIN_time), ]
+summary(df10)
+
+```
+**Observation:**
+All columns, except maxsessionuid and order, are character
+
+```{r}
+#check class
+class(df10)
+
+#convert time from character to POSIXct object
+df11 <- df10 %>% mutate(my_LOGIN_time = mdy_hm(df10$LOGIN_time), my_Out_time = mdy_hm(df10$Out_time))
+
+#Add a column for session time in minutes
+df11$sessiontime <- round((df11$my_Out_time - df11$my_LOGIN_time)/60, 2)
+
+#Remove time columns where time is shown as character
+df12 <- df11 %>% select(-LOGIN_time, -Out_time)
+
+#See summary of a difftime - need to convert it to numeric
+summary(as.numeric(df12$sessiontime))
+
+#Check distribution of session times - check for session time = zero
+table(df12$sessiontime)
+
+```
+**Observation**
+There are lots of session times = zero mins
+Assumption: No real work gets done if session time = zero mins
+So session time = zero are considered accidental login that don't affect obj functions
+
+```{r}
+#Thus, removing all session time = zero
+df12b <- df12[as.numeric(sessiontime) != 0]
+
+#Convert select character columns to factor 
+df13 <- mutate_at(df12b, vars('type', 'defsite', 'groupname'), as.factor)
+
+#Extract hr, day, weekday/weekend from login time and save in new columns
+df13$login_hr <- hour(as.POSIXlt(df13$my_LOGIN_time))
+df13$login_day <- day(as.POSIXlt(df13$my_LOGIN_time))
+df13$login_wday <- weekdays(as.POSIXlt(df13$my_LOGIN_time))
+#Weekends are TRUE
+df13$weekend = chron::is.weekend(df13$my_LOGIN_time)
+
+#Lump TX and TX_PIPE into one category called TX_all
+df13$defsite_grp[df13$defsite == "TX"] <- "TX_all"
+df13$defsite_grp[df13$defsite == "TX_PIPE"] <- "TX_all"
+
+#Lump LA and LA_PIPE into one category called LA_all
+df13$defsite_grp[df13$defsite == "LA"] <- "LA_all"
+df13$defsite_grp[df13$defsite == "LA_PIPE"] <- "LA_all"
+
+#Redefine OK_PIPE as OK_all under defsite_grp
+df13$defsite_grp[df13$defsite == "OK_PIPE"] <- "OK_all"
+
+#Remove OK_all rows - too few cases for training and testing
+df13b <- subset(df13, defsite_grp != "OK_all")
+
+#check number of TX_all, and LA_all cases - shouldn't have OK_all
+table(df13b$defsite_grp)
+
+#Compare LA_all and TX_all using Box plots - includes outliers
+ggplot(df13b, aes(x=groupname, y=as.numeric(sessiontime))) +
+  labs(y="Session time", x = "Role") +
+  ggtitle("Session times for all groups - includes outliers") +
+  geom_boxplot() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#Identify & remove outliers
+#Define outlier based on IQR (inter quartile range) - returns TRUE for outlier 
+outlier <- function(x) {
+  ifelse(x < quantile(x, 0.25) - 1.5 * IQR(x) | x > quantile(x, 0.75) + 1.5 * IQR(x), 
+         TRUE, 
+         FALSE)
+}
+#library(data.table) - already inserted at the beginning
+#apply the outlier function per group and report status under outlier_ident
+df13c <- setDT(df13b)[, outlier_ident := outlier(sessiontime), by = 'defsite_grp']
+view(df13c)
+#Remove outliers
+df13_no_out <- df13c[outlier_ident == FALSE]
+table(df13_no_out$defsite_grp)
+
+#Create boxplots for all - excluding outliers
+ggplot(df13_no_out, aes(x=groupname, y=as.numeric(sessiontime))) +
+  labs(y="Session time", x = "Role") +
+  ggtitle("Session times for all groups - no outliers") +
+  geom_boxplot() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#Select data where defsite_grp = LA_all (excludes outliers)
+df14_LA_no_out <- df13_no_out[defsite_grp == "LA_all"]
+
+#Summary statistics on sessiontime from LA_all (excludes outliers)
+round(mean(as.numeric(df14_LA_no_out$sessiontime)),2)
+round(median(as.numeric(df14_LA_no_out$sessiontime)),2)
+
+#Box plot for LA_all - session times per groupname (excludes outliers)
+ggplot(df14_LA_no_out, aes(x=groupname, y=as.numeric(sessiontime))) +
+  labs(y="Session time", x = "Role") +
+  ggtitle("LA_all - session times with NO outliers") +
+  geom_boxplot() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#Select data where defsite_grp = TX_all (excludes outliers)
+df14_TX_no_out <- df13_no_out[defsite_grp == "TX_all"]
+
+#Summary statistics on sessiontime from TX_all (excludes outliers)
+round(mean(as.numeric(df14_TX_no_out$sessiontime)),2)
+round(median(as.numeric(df14_TX_no_out$sessiontime)),2)
+
+#Box plot for TX_all - session times per groupname (excludes outliers)
+ggplot(df14_TX_no_out, aes(x=groupname, y=as.numeric(sessiontime))) +
+  labs(y="Session time", x = "Role") +
+  ggtitle("TX_all - session times with NO outliers") +
+  geom_boxplot() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#Convert to data frame (DF)
+df15_no_out <- setDF(df13_no_out)
+
+#Convert weekend logical values (TRUE = weekends = 1 & FALSE = weekdays = 0) to 1 and 0
+df15_no_out$weekend_num <- as.numeric(df15_no_out$weekend)
+
+#Convert session time to numeric (from difftime) - very important
+df15_no_out$sessiontime_num <- as.numeric(df15_no_out$sessiontime)
+
+#Convert defsite_grp to factor 
+df15_no_out <- mutate_at(df15_no_out, vars('defsite_grp'), as.factor)
+
+#Number of distinct groupnames
+length(unique(df15_no_out$groupname))
+
+```
+**Observation:**
+There are 23 kinds of groupname - each with widely different no of cases
+This will create imbalance for training and testing.
+So groupnames need to be lumped - following guidance from client (Freddy).
+
+```{r}
+#Lumping groupname with client guidance - reducing groupname from 23 to 6
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('IT SECURITY', 'IT ADMINISTRATOR', 'IT ANALYST')] <- 'IT'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('CORP PIPELINE TECH SUPPORT', 'PIPELINE FIELD MGMT','PIPELINE TECHNICIAN')] <- 'PIPELINE'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('CONTRACTOR PLANNER', 'PLANNER' , 'SCHEDULER')] <- 'PLANNING'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('CONTRACTOR', 'ENGINEER', 'QUICK REPORTING USER')] <- 'OPERATIONS'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('MASTER DATA', 'MAINTENANCE TECHNICIAN', 'CONTRACTOR TECHNICIAN', 'MAINTENANCE SUPERVISOR', 'CONTRACTOR SUPERVISOR')] <- 'MAINTENANCE'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('ACCOUNTING', 'PURCHASING MANAGER', 'SUPPLY CHAIN', 'STOREROOM MANAGER', 'STOREROOM CLERK', 'SENIOR STOREROOM CLERK')] <- 'SUPPLY CHAIN'
+
+table(df15_no_out$groupname_bin) 
+
+```
+**Observation:**
+23 groupnames reduced to 6
+The number of cases vary from 85 to 10687 between the 6 groupname_bin.
+
+```{r}
+#Display histogram of sessiontime_num
+plot_hist = function(df, numcols, bins = 10){
+  options(repr.plot.width=4, repr.plot.height=3) # Set the initial plot area dimensions
+  for(col in numcols){
+    if(is.numeric(df[,col])){
+      bw = (max(df[,col]) - min(df[,col]))/(bins + 1)
+      p = ggplot(df, aes_string(col)) + ggtitle("Sessiontime_num") +
+        geom_histogram(alpha = 0.6, binwidth = bw) 
+      print(p)
+    }
+  }
+}
+
+numcols = c('sessiontime_num')
+plot_hist(df15_no_out, numcols)
+
+```
+**Observation:**
+The histogram in NOT normal - it is bi-modal
+
+```{r}
+#Convert groupname_bin to factor 
+df15_no_out <- mutate_at(df15_no_out, vars('groupname_bin'), as.factor)
+
+#Convert groupname_bin to numbers (i.e., gname_bin_num)
+df15_no_out$gname_bin_num <- ifelse(df15_no_out$groupname_bin == "IT", 1,
+               ifelse(df15_no_out$groupname_bin == "MAINTENANCE", 2,
+                      ifelse(df15_no_out$groupname_bin == "OPERATIONS", 3,
+                             ifelse(df15_no_out$groupname_bin == "PIPELINE", 4,
+                                    ifelse(df15_no_out$groupname_bin == "PLANNING", 5,
+                                           ifelse(df15_no_out$groupname_bin == "SUPPLY CHAIN", 6,
+                                                  NA ))))))
+
+table(df15_no_out$gname_bin_num) 
+
+```
+**Observation:**
+End of initial data analysis and cleanup
+```{r}
+#Rename dataframe after initial analysis
+df16_no_out <- df15_no_out
+```

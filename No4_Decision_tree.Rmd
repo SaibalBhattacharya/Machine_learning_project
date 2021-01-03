@@ -1,0 +1,246 @@
+---
+title: "Question 1: Predicting defsite_grp - Decision Tree"
+output: html_document
+author: Saibal Bhattacharya
+---
+
+```{r }
+library(tidyverse)
+library(data.table)
+library(hrbrthemes)
+library(lubridate)
+library(chron)
+library(data.table)
+library(ggplot2)
+library(repr)
+library(dplyr)
+library(caret)
+library(gridExtra)
+library(randomForest)
+library(MLmetrics)
+
+# Set the initial plot area dimensions
+options(repr.plot.width=4, repr.plot.height=4) 
+
+df1 <- read.csv("PROJECT3_DATA.csv")
+```
+
+
+```{r }
+df4 <- df1 %>% filter(attemptresult != "SYSLOGOUT")
+df5 <- setDT(df4)
+df6 <- df5 %>% arrange(maxsessionuid, attemptdate)
+df6b <- unique( df6[ , 1:7 ] )
+df7 <- df6b[, order := seq(1:.N), by=maxsessionuid]
+df7_login <- df7[attemptresult == "LOGIN"]
+df7_logout <- df7[attemptresult == "LOGOUT" | attemptresult == "TIMEOUT" | attemptresult == "RESTART"]
+df7_logout[, order := order - 1]
+df8 <- df7_login[, .(maxsessionuid, order, type, userid, defsite, groupname, attemptdate)][df7_logout[, .(maxsessionuid, order, type, userid, defsite, groupname, attemptdate)], 
+                                                                                           on=c("maxsessionuid", "order", "type", "userid", "defsite", "groupname"), nomatch=NA]
+df9 <- setnames(df8, c("attemptdate", "i.attemptdate"), c("LOGIN_time", "Out_time"))
+df10 <- df9[!is.na(df9$LOGIN_time), ]
+df11 <- df10 %>% mutate(my_LOGIN_time = mdy_hm(df10$LOGIN_time), my_Out_time = mdy_hm(df10$Out_time))
+df11$sessiontime <- round((df11$my_Out_time - df11$my_LOGIN_time)/60, 2)
+df12 <- df11 %>% select(-LOGIN_time, -Out_time)
+df12b <- df12[as.numeric(sessiontime) != 0]
+df13 <- mutate_at(df12b, vars('type', 'defsite', 'groupname'), as.factor)
+df13$login_hr <- hour(as.POSIXlt(df13$my_LOGIN_time))
+df13$login_day <- day(as.POSIXlt(df13$my_LOGIN_time))
+df13$login_wday <- weekdays(as.POSIXlt(df13$my_LOGIN_time))
+df13$weekend = chron::is.weekend(df13$my_LOGIN_time)
+df13$defsite_grp[df13$defsite == "TX"] <- "TX_all"
+df13$defsite_grp[df13$defsite == "TX_PIPE"] <- "TX_all"
+df13$defsite_grp[df13$defsite == "LA"] <- "LA_all"
+df13$defsite_grp[df13$defsite == "LA_PIPE"] <- "LA_all"
+df13$defsite_grp[df13$defsite == "OK_PIPE"] <- "OK_all"
+df13b <- subset(df13, defsite_grp != "OK_all")
+outlier <- function(x) {
+  ifelse(x < quantile(x, 0.25) - 1.5 * IQR(x) | x > quantile(x, 0.75) + 1.5 * IQR(x), 
+         TRUE, 
+         FALSE)
+}
+df13c <- setDT(df13b)[, outlier_ident := outlier(sessiontime), by = 'defsite_grp']
+df13_no_out <- df13c[outlier_ident == FALSE]
+
+df15_no_out <- setDF(df13_no_out)
+df15_no_out$weekend_num <- as.numeric(df15_no_out$weekend)
+df15_no_out$sessiontime_num <- as.numeric(df15_no_out$sessiontime)
+df15_no_out <- mutate_at(df15_no_out, vars('defsite_grp'), as.factor)
+
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('IT SECURITY', 'IT ADMINISTRATOR', 'IT ANALYST')] <- 'IT'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('CORP PIPELINE TECH SUPPORT', 'PIPELINE FIELD MGMT','PIPELINE TECHNICIAN')] <- 'PIPELINE'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('CONTRACTOR PLANNER', 'PLANNER' , 'SCHEDULER')] <- 'PLANNING'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('CONTRACTOR', 'ENGINEER', 'QUICK REPORTING USER')] <- 'OPERATIONS'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('MASTER DATA', 'MAINTENANCE TECHNICIAN', 'CONTRACTOR TECHNICIAN', 'MAINTENANCE SUPERVISOR', 'CONTRACTOR SUPERVISOR')] <- 'MAINTENANCE'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('ACCOUNTING', 'PURCHASING MANAGER', 'SUPPLY CHAIN', 'STOREROOM MANAGER', 'STOREROOM CLERK', 'SENIOR STOREROOM CLERK')] <- 'SUPPLY CHAIN'
+
+df15_no_out <- mutate_at(df15_no_out, vars('groupname_bin'), as.factor)
+
+df15_no_out$gname_bin_num <- ifelse(df15_no_out$groupname_bin == "IT", 1,
+                                    ifelse(df15_no_out$groupname_bin == "MAINTENANCE", 2,
+                                           ifelse(df15_no_out$groupname_bin == "OPERATIONS", 3,
+                                                  ifelse(df15_no_out$groupname_bin == "PIPELINE", 4,
+                                                         ifelse(df15_no_out$groupname_bin == "PLANNING", 5,
+                                                                ifelse(df15_no_out$groupname_bin == "SUPPLY CHAIN", 6,
+                                                                       NA ))))))
+
+df16_no_out <- df15_no_out
+```
+
+```{r }
+# ------------------------- Decision Tree ------------------------------------------
+#View(df16_no_out)
+str(df16_no_out)
+table(df16_no_out$defsite_grp)
+
+#split the dataset into test and training set - use 75% of data for training.
+set.seed(1955)
+## Randomly sample cases to create independent training and test data
+partition = createDataPartition(df16_no_out[,'defsite_grp'], times = 1, p = 0.75, list = FALSE)
+# Create the training sample
+training = df16_no_out[partition,] 
+dim(training)
+# Create the test sample
+test = df16_no_out[-partition,] 
+dim(test)
+
+#scale the training and test datasets
+num_cols = c('login_hr', 'login_day', 'weekend_num', 'sessiontime_num')
+preProcValues <- preProcess(training[,num_cols], method = c("center", "scale"))
+training[,num_cols] = predict(preProcValues, training[,num_cols])
+test[,num_cols] = predict(preProcValues, test[,num_cols])
+head(training[,num_cols])
+
+#define and fit a random forest model with 5 trees
+set.seed(1115)
+rf_mod = randomForest(defsite_grp ~ login_hr + login_day + weekend_num + sessiontime_num + gname_bin_num + type, data = training, ntree = 5)
+
+#compute the class score from the scaled features
+test$scores = predict(rf_mod, newdata = test)
+head(test, 10)
+
+#Evaluate the model results. 
+#Objective function (defsite_grp) has two categories - TX_all and LA_all. 
+#Evaluation code modified for a two category problem
+print_metrics = function(df, label){
+  ## Compute and print the confusion matrix
+  cm = as.matrix(table(Actual = df$defsite_grp, Predicted = df$scores))
+  print(cm)
+  
+  ## Compute and print accuracy 
+  accuracy = round(sum(sapply(1:nrow(cm), function(i) cm[i,i]))/sum(cm), 3)
+  cat('\n')
+  cat(paste('Accuracy = ', as.character(accuracy)), '\n \n')                           
+  
+  ## Compute and print precision, recall and F1
+  precision = sapply(1:nrow(cm), function(i) cm[i,i]/sum(cm[i,]))
+  recall = sapply(1:nrow(cm), function(i) cm[i,i]/sum(cm[,i]))    
+  F1 = sapply(1:nrow(cm), function(i) 2*(recall[i] * precision[i])/(recall[i] + precision[i]))    
+  metrics = rbind(precision, recall, F1)
+  dimnames(metrics) = list(c('Precision', 'Recall', 'F1'), unique(test$defsite_grp))      
+  print(metrics)
+}  
+print_metrics(test, 'defsite_grp')
+
+```
+**Observation:**  
+1. Accuracy = 0.698 when run with 5 trees.  
+2. Prediction for LA_all: 3006 correctly predicted while 428 incorrectly predicted.  
+3. Prediction for TX_all: 777 correctly predicted while 1205 incorrectly predicted.
+
+```{r }
+# It is possible that a random forest model with more trees would separate these cases better.
+# use a model with 100 trees (estimators)
+
+set.seed(1117)
+rf_mod = randomForest(defsite_grp ~ login_hr + login_day + weekend_num + sessiontime_num + gname_bin_num + type, data = training, ntree = 100)
+test$scores = predict(rf_mod, newdata = test)
+print_metrics(test, 'defsite_grp')
+
+```
+**Observation:**  
+1. Also ran model with 40 trees: accuracy was 0.708.    
+2. Accuracy = 0.711 when run with 100 trees.  
+
+```{r }
+#Display feature importance computed during model training
+options(repr.plot.width=4, repr.plot.height=3)
+imp = varImp(rf_mod)
+imp[,'Feature'] = row.names(imp)
+ggplot(imp, aes(x = Feature, y = Overall)) + geom_point(size = 4) +
+  ggtitle('Variable importance in predicting defsite_grp')
+
+```
+<br>
+**Observation:**    
+1. weekend_num has low importance.
+
+```{r }
+#weekend_num has low importance and is dropped. Rerun model.
+set.seed(1115)
+rf_mod = randomForest(defsite_grp ~ login_hr + login_day + sessiontime_num + gname_bin_num + type, data = training, ntree = 40)
+test$scores = predict(rf_mod, newdata = test)
+print_metrics(test, 'defsite_grp')
+
+```
+**Observation:**  
+1. Accuracy got lowered to 0.7 due to dropping weekend_num.  
+
+```{r }
+#Plot matches and mismatches
+## Create column of correct-incorrect classification
+test$correct = ifelse(test$defsite_grp == test$scores, 'correct', 'incorrect')
+
+single_plot_classes = function(df, colx, coly){
+  ggplot(df, aes_string(colx,coly)) +
+    geom_point(aes(color = factor(defsite_grp), shape = correct), alpha = 0.4)
+}
+
+plot_df16_no_out_classes = function(df){
+  options(repr.plot.width=8, repr.plot.height=5)
+  grid.arrange(
+    single_plot_classes(df, 'login_hr', 'defsite_grp'),
+    nrow = 1)
+}
+plot_df16_no_out_classes(test)
+
+plot_df16_no_out_classes = function(df){
+  options(repr.plot.width=8, repr.plot.height=5)
+  grid.arrange(
+    single_plot_classes(df, 'login_day', 'defsite_grp'),
+    nrow = 1)
+}
+plot_df16_no_out_classes(test)
+
+plot_df16_no_out_classes = function(df){
+  options(repr.plot.width=8, repr.plot.height=5)
+  grid.arrange(
+    single_plot_classes(df, 'sessiontime_num', 'defsite_grp'),
+    nrow = 1)
+}
+plot_df16_no_out_classes(test)
+
+plot_df16_no_out_classes = function(df){
+  options(repr.plot.width=8, repr.plot.height=5)
+  grid.arrange(
+    single_plot_classes(df, 'gname_bin_num', 'defsite_grp'),
+    nrow = 1)
+}
+plot_df16_no_out_classes(test)
+
+plot_df16_no_out_classes = function(df){
+  options(repr.plot.width=8, repr.plot.height=5)
+  grid.arrange(
+    single_plot_classes(df, 'type', 'defsite_grp'),
+    nrow = 1)
+}
+plot_df16_no_out_classes(test)
+
+```
+<br>
+**Observation:**  
+1. Difficult to read these plots due to data overlap.
+```{r }
+
+```
+

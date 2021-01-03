@@ -1,0 +1,209 @@
+---
+title: "Question 1: KNN 3 Analysis - Predicting defsite_grp"
+output: html_document
+author: Saibal Bhattacharya
+---
+
+**Prework: Load the CSV file and libraries.**  
+```{r}
+library(tidyverse)
+library(data.table)
+library(hrbrthemes)
+library(lubridate)
+library(chron)
+library(data.table)
+library(ggplot2)
+library(repr)
+library(dplyr)
+library(caret)
+library(kknn)
+
+df1 <- read.csv("PROJECT3_DATA.csv")
+
+# Set the initial plot area dimensions
+options(repr.plot.width=4, repr.plot.height=4)
+```
+
+**Given this data, is it possible to predict what user group and/or location a user is tied to based on login time and session duration?**  
+
+```{r}
+#---------------------- Initial review and cleaning of data -----------------------------
+df4 <- df1 %>% filter(attemptresult != "SYSLOGOUT")
+df5 <- setDT(df4)
+df6 <- df5 %>% arrange(maxsessionuid, attemptdate)
+df6b <- unique( df6[ , 1:7 ] )
+df7 <- df6b[, order := seq(1:.N), by=maxsessionuid]
+df7_login <- df7[attemptresult == "LOGIN"]
+df7_logout <- df7[attemptresult == "LOGOUT" | attemptresult == "TIMEOUT" | attemptresult == "RESTART"]
+df7_logout[, order := order - 1]
+df8 <- df7_login[, .(maxsessionuid, order, type, userid, defsite, groupname, attemptdate)][df7_logout[, .(maxsessionuid, order, type, userid, defsite, groupname, attemptdate)], 
+                                                                                           on=c("maxsessionuid", "order", "type", "userid", "defsite", "groupname"), nomatch=NA]
+df9 <- setnames(df8, c("attemptdate", "i.attemptdate"), c("LOGIN_time", "Out_time"))
+df10 <- df9[!is.na(df9$LOGIN_time), ]
+df11 <- df10 %>% mutate(my_LOGIN_time = mdy_hm(df10$LOGIN_time), my_Out_time = mdy_hm(df10$Out_time))
+df11$sessiontime <- round((df11$my_Out_time - df11$my_LOGIN_time)/60, 2)
+df12 <- df11 %>% select(-LOGIN_time, -Out_time)
+df12b <- df12[as.numeric(sessiontime) != 0]
+df13 <- mutate_at(df12b, vars('type', 'defsite', 'groupname'), as.factor)
+df13$login_hr <- hour(as.POSIXlt(df13$my_LOGIN_time))
+df13$login_day <- day(as.POSIXlt(df13$my_LOGIN_time))
+df13$login_wday <- weekdays(as.POSIXlt(df13$my_LOGIN_time))
+df13$weekend = chron::is.weekend(df13$my_LOGIN_time)
+df13$defsite_grp[df13$defsite == "TX"] <- "TX_all"
+df13$defsite_grp[df13$defsite == "TX_PIPE"] <- "TX_all"
+df13$defsite_grp[df13$defsite == "LA"] <- "LA_all"
+df13$defsite_grp[df13$defsite == "LA_PIPE"] <- "LA_all"
+df13$defsite_grp[df13$defsite == "OK_PIPE"] <- "OK_all"
+df13b <- subset(df13, defsite_grp != "OK_all")
+outlier <- function(x) {
+  ifelse(x < quantile(x, 0.25) - 1.5 * IQR(x) | x > quantile(x, 0.75) + 1.5 * IQR(x), 
+         TRUE, 
+         FALSE)
+}
+df13c <- setDT(df13b)[, outlier_ident := outlier(sessiontime), by = 'defsite_grp']
+df13_no_out <- df13c[outlier_ident == FALSE]
+
+df15_no_out <- setDF(df13_no_out)
+df15_no_out$weekend_num <- as.numeric(df15_no_out$weekend)
+df15_no_out$sessiontime_num <- as.numeric(df15_no_out$sessiontime)
+df15_no_out <- mutate_at(df15_no_out, vars('defsite_grp'), as.factor)
+
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('IT SECURITY', 'IT ADMINISTRATOR', 'IT ANALYST')] <- 'IT'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('CORP PIPELINE TECH SUPPORT', 'PIPELINE FIELD MGMT','PIPELINE TECHNICIAN')] <- 'PIPELINE'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('CONTRACTOR PLANNER', 'PLANNER' , 'SCHEDULER')] <- 'PLANNING'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('CONTRACTOR', 'ENGINEER', 'QUICK REPORTING USER')] <- 'OPERATIONS'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('MASTER DATA', 'MAINTENANCE TECHNICIAN', 'CONTRACTOR TECHNICIAN', 'MAINTENANCE SUPERVISOR', 'CONTRACTOR SUPERVISOR')] <- 'MAINTENANCE'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('ACCOUNTING', 'PURCHASING MANAGER', 'SUPPLY CHAIN', 'STOREROOM MANAGER', 'STOREROOM CLERK', 'SENIOR STOREROOM CLERK')] <- 'SUPPLY CHAIN'
+
+df15_no_out <- mutate_at(df15_no_out, vars('groupname_bin'), as.factor)
+
+df15_no_out$gname_bin_num <- ifelse(df15_no_out$groupname_bin == "IT", 1,
+                                    ifelse(df15_no_out$groupname_bin == "MAINTENANCE", 2,
+                                           ifelse(df15_no_out$groupname_bin == "OPERATIONS", 3,
+                                                  ifelse(df15_no_out$groupname_bin == "PIPELINE", 4,
+                                                         ifelse(df15_no_out$groupname_bin == "PLANNING", 5,
+                                                                ifelse(df15_no_out$groupname_bin == "SUPPLY CHAIN", 6,
+                                                                       NA ))))))
+
+df16_no_out <- df15_no_out
+
+```
+
+```{r}
+# ----------------------- KNN_3 (nearest neighbor) with 3 trees --------------
+# Predicting defsite_grp using login_hr + login_day + weekend_num + sessiontime_num + gname_bin_num 
+# Using only numeric columns
+# Outliers excluded from model
+# OK_all excluded from model as too few cases to train and test
+
+#show the data types of each column
+str(df16_no_out)
+
+#determine the number of unique categories of defsite_grp (label), 
+#and number of cases for each label 
+table(df16_no_out$defsite_grp)
+
+#Data preparation step 1 - scale the numeric values of the features
+#Zscore normalization is used - scales each feature so that the mean is 0 and the variance is 1.0
+df16_no_out[,c('login_hr', 'login_day', 'weekend_num', 'sessiontime_num', 'gname_bin_num')] = 
+  lapply(df16_no_out[,c('login_hr', 'login_day', 'weekend_num', 'sessiontime_num', 'gname_bin_num')], scale)
+print(summary(df16_no_out)) #includes mean (but NOT standard dev)
+#Find standard dev
+print(sapply(df16_no_out[,c('login_hr', 'login_day', 'weekend_num', 'sessiontime_num', 'gname_bin_num')], sd))
+
+```
+**Observation: **
+Means are zero and variance = 1
+
+```{r}
+#Data preparation step 2 -  Split the dataset into randomly sampled training and evaluation data sets
+#and evaluation data sets
+#randomly sample the cases and place them in either the training or test data frame
+## Split the data into a training and test set by Bernoulli sampling
+set.seed(2345)
+train.df16_no_out = sample_frac(df16_no_out, 0.7)
+dim(train.df16_no_out)
+# use as.numeric because rownames() returns character
+test.df16_no_out = df16_no_out[-as.numeric(rownames(train.df16_no_out)),] 
+dim(test.df16_no_out)
+
+# ----- KNN = 3 (including gname_bin_num, i.e., groupnames expressed as numbers) ------
+
+#train and evaluate a K = 3 model (includes gname_bin_num)
+knn.3 <- kknn(defsite_grp ~ login_hr + login_day + weekend_num + sessiontime_num, gname_bin_num, train = train.df16_no_out, test = test.df16_no_out, k=3)
+
+#display most probable class along with the probabilities of the prediction for each class. 
+#The most probable class is the prediction
+#summary(knn.3)
+
+#compute the accuracy of the model. 
+#Calculate accuracy as the percentage of the test cases correctly classified.
+test.df16_no_out$predicted = predict(knn.3)
+test.df16_no_out$correct = test.df16_no_out$defsite_grp == test.df16_no_out$predicted
+accuracy_KNN3_YES_gname <- round(100 * sum(test.df16_no_out$correct) / nrow(test.df16_no_out))
+
+#Print accuracy
+cat("Accuracy for KNN 3 (including gname_bin_num), %: ", accuracy_KNN3_YES_gname)
+
+#examine plots of the classifications of defsite_grp
+ggplot(test.df16_no_out, aes(sessiontime_num, login_hr)) + geom_point(aes(color = predicted, shape = correct))
+
+```
+<br>
+**Observation:**
+1. 1. Accuracy of predicting defsite is 76% using KNN model with 3 trees.
+```{r}
+# ---- KNN = 3 (excluding gname_bin_num, i.e., groupnames expressed as numbers)-------
+
+#train and evaluate a K = 3 model (includes gname_bin_num)
+knn.3 <- kknn(defsite_grp ~ login_hr + login_day + weekend_num + sessiontime_num, train = train.df16_no_out, test = test.df16_no_out, k=3)
+
+#display most probable class along with the probabilities of the prediction for each class. 
+#The most probable class is the prediction
+#summary(knn.3)
+
+#compute the accuracy of the model. 
+#Calculate accuracy as the percentage of the test cases correctly classified.
+test.df16_no_out$predicted = predict(knn.3)
+test.df16_no_out$correct = test.df16_no_out$defsite_grp == test.df16_no_out$predicted
+accuracy_KNN3_NO_gname <- round(100 * sum(test.df16_no_out$correct) / nrow(test.df16_no_out))
+
+#Print accuracy
+cat("Accuracy for KNN 3 (excluding gname_bin_num):, % ", accuracy_KNN3_NO_gname)
+
+```
+<br>
+**Observation:**  
+1. Accuracy of predicting defsite is 76% using KNN model with 3 trees.  
+2. Accuracy is unaffected by the inclusion or exclusion of groupname (expressed as numbers)
+
+```{r }
+# ----- KNN = 5 (including gname_bin_num, i.e., groupnames expressed as numbers) ------
+
+#train and evaluate a K = 5 model
+knn.5 <- kknn(defsite_grp ~ login_hr + login_day + weekend_num + sessiontime_num, gname_bin_num, train = train.df16_no_out, test = test.df16_no_out, k=5)
+
+#display most probable class along with the probabilities of the prediction for each class. 
+#The most probable class is the prediction
+#summary(knn.5)
+
+#compute the accuracy of the model. 
+#Accuracy is the percentage of the test cases correctly classified.
+test.df16_no_out$predicted = predict(knn.5)
+test.df16_no_out$correct = test.df16_no_out$defsite_grp == test.df16_no_out$predicted
+accuracy_KNN5_YES_gname <- round(100 * sum(test.df16_no_out$correct) / nrow(test.df16_no_out))
+
+#Print accuracy
+cat("Accuracy for KNN 5 (including gname_bin_num), %: ", accuracy_KNN5_YES_gname)
+
+#examine plots of the classifications of defsite_grp
+ggplot(test.df16_no_out, aes(sessiontime_num, login_hr)) + geom_point(aes(color = predicted, shape = correct))
+
+```
+<br>
+**Observation:**  
+1. KNN3 (3 trees, including gname_bin_num) - accuracy in predicting defsite_grp = 76%  
+2. KNN5 (5 trees, including gname_bin_num) - accuracy in predicting defsite_grp = 75%  
+3. KNN3 (3 trees, excluding gname_bin_num) - accuracy in predicting defsite_grp = 76%
+
+

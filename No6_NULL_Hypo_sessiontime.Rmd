@@ -1,0 +1,190 @@
+---
+title: "NULL Hypothesis: Sessiontime_num - Question 2"
+output: html_document
+author: Saibal Bhattacharya
+---
+
+```{r }
+library(tidyverse)
+library(data.table)
+library(hrbrthemes)
+library(lubridate)
+library(chron)
+library(data.table)
+library(ggplot2)
+library(repr)
+library(dplyr)
+library(caret)
+install.packages('effsize')
+install.packages('ggridges')
+library(effsize)
+library(ggridges)
+# Set the initial plot area dimensions
+options(repr.plot.width=4, repr.plot.height=4) 
+
+df1 <- read.csv("PROJECT3_DATA.csv")
+```
+
+
+```{r }
+df4 <- df1 %>% filter(attemptresult != "SYSLOGOUT")
+df5 <- setDT(df4)
+df6 <- df5 %>% arrange(maxsessionuid, attemptdate)
+df6b <- unique( df6[ , 1:7 ] )
+df7 <- df6b[, order := seq(1:.N), by=maxsessionuid]
+df7_login <- df7[attemptresult == "LOGIN"]
+df7_logout <- df7[attemptresult == "LOGOUT" | attemptresult == "TIMEOUT" | attemptresult == "RESTART"]
+df7_logout[, order := order - 1]
+df8 <- df7_login[, .(maxsessionuid, order, type, userid, defsite, groupname, attemptdate)][df7_logout[, .(maxsessionuid, order, type, userid, defsite, groupname, attemptdate)], 
+                                                                                           on=c("maxsessionuid", "order", "type", "userid", "defsite", "groupname"), nomatch=NA]
+df9 <- setnames(df8, c("attemptdate", "i.attemptdate"), c("LOGIN_time", "Out_time"))
+df10 <- df9[!is.na(df9$LOGIN_time), ]
+df11 <- df10 %>% mutate(my_LOGIN_time = mdy_hm(df10$LOGIN_time), my_Out_time = mdy_hm(df10$Out_time))
+df11$sessiontime <- round((df11$my_Out_time - df11$my_LOGIN_time)/60, 2)
+df12 <- df11 %>% select(-LOGIN_time, -Out_time)
+df12b <- df12[as.numeric(sessiontime) != 0]
+df13 <- mutate_at(df12b, vars('type', 'defsite', 'groupname'), as.factor)
+df13$login_hr <- hour(as.POSIXlt(df13$my_LOGIN_time))
+df13$login_day <- day(as.POSIXlt(df13$my_LOGIN_time))
+df13$login_wday <- weekdays(as.POSIXlt(df13$my_LOGIN_time))
+df13$weekend = chron::is.weekend(df13$my_LOGIN_time)
+df13$defsite_grp[df13$defsite == "TX"] <- "TX_all"
+df13$defsite_grp[df13$defsite == "TX_PIPE"] <- "TX_all"
+df13$defsite_grp[df13$defsite == "LA"] <- "LA_all"
+df13$defsite_grp[df13$defsite == "LA_PIPE"] <- "LA_all"
+df13$defsite_grp[df13$defsite == "OK_PIPE"] <- "OK_all"
+df13b <- subset(df13, defsite_grp != "OK_all")
+outlier <- function(x) {
+  ifelse(x < quantile(x, 0.25) - 1.5 * IQR(x) | x > quantile(x, 0.75) + 1.5 * IQR(x), 
+         TRUE, 
+         FALSE)
+}
+df13c <- setDT(df13b)[, outlier_ident := outlier(sessiontime), by = 'defsite_grp']
+df13_no_out <- df13c[outlier_ident == FALSE]
+
+df15_no_out <- setDF(df13_no_out)
+df15_no_out$weekend_num <- as.numeric(df15_no_out$weekend)
+df15_no_out$sessiontime_num <- as.numeric(df15_no_out$sessiontime)
+df15_no_out <- mutate_at(df15_no_out, vars('defsite_grp'), as.factor)
+
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('IT SECURITY', 'IT ADMINISTRATOR', 'IT ANALYST')] <- 'IT'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('CORP PIPELINE TECH SUPPORT', 'PIPELINE FIELD MGMT','PIPELINE TECHNICIAN')] <- 'PIPELINE'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('CONTRACTOR PLANNER', 'PLANNER' , 'SCHEDULER')] <- 'PLANNING'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('CONTRACTOR', 'ENGINEER', 'QUICK REPORTING USER')] <- 'OPERATIONS'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('MASTER DATA', 'MAINTENANCE TECHNICIAN', 'CONTRACTOR TECHNICIAN', 'MAINTENANCE SUPERVISOR', 'CONTRACTOR SUPERVISOR')] <- 'MAINTENANCE'
+df15_no_out$groupname_bin[df15_no_out$groupname %in% c('ACCOUNTING', 'PURCHASING MANAGER', 'SUPPLY CHAIN', 'STOREROOM MANAGER', 'STOREROOM CLERK', 'SENIOR STOREROOM CLERK')] <- 'SUPPLY CHAIN'
+
+df15_no_out <- mutate_at(df15_no_out, vars('groupname_bin'), as.factor)
+
+df15_no_out$gname_bin_num <- ifelse(df15_no_out$groupname_bin == "IT", 1,
+                                    ifelse(df15_no_out$groupname_bin == "MAINTENANCE", 2,
+                                           ifelse(df15_no_out$groupname_bin == "OPERATIONS", 3,
+                                                  ifelse(df15_no_out$groupname_bin == "PIPELINE", 4,
+                                                         ifelse(df15_no_out$groupname_bin == "PLANNING", 5,
+                                                                ifelse(df15_no_out$groupname_bin == "SUPPLY CHAIN", 6,
+                                                                       NA ))))))
+
+df16_no_out <- df15_no_out
+```
+
+```{r }
+#--------------- Initial data manipulation  ----------------------
+#Start with dataframe: no outliers, and OK_all not present
+#sessiontime_num - expresses sessiontime in numeric format
+
+#Create new dataframe with select columns
+df17 <- df16_no_out %>% select(maxsessionuid, defsite_grp, sessiontime_num)
+
+#Select data where defsite_grp = TX_all
+df17_TX <- df17 %>% filter(defsite_grp == "TX_all")
+
+#Histogram of session time for TX_all
+plot_hist = function(df, numcols, bins = 10){
+  options(repr.plot.width=4, repr.plot.height=3) # Set the initial plot area dimensions
+  for(col in numcols){
+    if(is.numeric(df[,col])){
+      bw = (max(df[,col]) - min(df[,col]))/(bins + 1)
+      p = ggplot(df, aes_string(col)) + ggtitle("Sessiontime_num (mins) - TX") +
+        geom_histogram(alpha = 0.6, binwidth = bw) 
+      print(p)
+    }
+  }
+}
+numcols = c('sessiontime_num')
+plot_hist(df17_TX, numcols)
+
+#Select data where defsite_grp = LA_all
+df17_LA <- df17 %>% filter(defsite_grp == "LA_all")
+
+#Histogram of session time for LA_all
+plot_hist = function(df, numcols, bins = 10){
+  options(repr.plot.width=4, repr.plot.height=3) # Set the initial plot area dimensions
+  for(col in numcols){
+    if(is.numeric(df[,col])){
+      bw = (max(df[,col]) - min(df[,col]))/(bins + 1)
+      p = ggplot(df, aes_string(col)) + ggtitle("Sessiontime_num (mins) - LA") +
+        geom_histogram(alpha = 0.6, binwidth = bw) 
+      print(p)
+    }
+  }
+}
+numcols = c('sessiontime_num')
+plot_hist(df17_LA, numcols)
+
+# ------------ NULL HYPOTHESIS testing - sessiontime_num for LA and TX -------------------- 
+
+#Convert table to dataframe - for LA_all
+class(df17_LA)
+df17_LA <- as.data.frame(df17_LA)
+
+#Calculate mean of hourly LOGIN frequency - for LA_all
+mean(df17_LA$sessiontime_num) 
+
+#Convert table to dataframe - for TX_all
+df17_TX <- as.data.frame(df17_TX)
+
+#Calculate mean of hourly LOGIN frequency - for TX_all
+mean(df17_TX$sessiontime_num) 
+
+#Diff in mean of frequency of hourly LOGINs - TX vs LA
+diff_mean_freq = round((mean(df17_TX$sessiontime_num) - mean(df17_LA$sessiontime_num)), 3)
+diff_mean_freq
+
+#Combine df17_LA and df17_TX
+df18_TX_LA <- rbind(df17_LA, df17_TX)
+
+table(df18_TX_LA$defsite_grp)
+
+```
+**Observation:**    
+1. Have 13736 samples for LA and 7929 samples from TX.
+
+```{r }
+#Run a two-group t-test to determine if differences in means are significant
+#default in R is to run the "Welch" version of the test.
+#Welch - does not make any assumptions about the variances of the two groups
+t.test(sessiontime_num ~ defsite_grp, data= df18_TX_LA)
+
+```
+**Observations:**  
+1. # t-value = -18.6 - i.e.,the difference in means is ~18 times larger than would be expected by chance.  
+2. How often would a result this big happen if the null hypothesis was actually true?  
+3. Because p < 2.2e-16; i.e., atleast 2.2*10-14% of the time.  
+4. This is sufficient to reject the NULL hypothesis - difference in means of session times between TX and LA users didn't happen by chance.
+
+```{r }
+#Display data on box plot
+ggplot(df18_TX_LA, aes(x=defsite_grp, y=sessiontime_num, fill = defsite_grp)) + 
+  geom_boxplot() +
+  stat_summary(fun=mean, geom="point", shape=23, size=4)
+
+```
+
+```{r }
+# Estimate the effect size (Cohen's d)
+cohen.d(sessiontime_num ~ defsite_grp, data=df18_TX_LA)
+
+```
+**Observations:**  
+1. tells us that our sample effect size is small (d estimate = -0.26 (small)).  
+2. 95% confident that true effect size is somewhere between small and very small.  
