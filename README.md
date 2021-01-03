@@ -41,7 +41,7 @@ DECISION TREES – RESULTS:
 	- Random forest model (5 trees) – 69.8% accuracy in predicting user location
 	- Random forest model (40 trees) – 70.8% accuracy in predicting user location
 	- Random forest model (100 trees) – 71.1% accuracy in predicting user location
-		- Variable importance plot shows that weekend_num (i.e., if user logged in during weekdays or 	weekend) had the least effect in determining the 		user’s location
+		- Variable importance plot shows that weekend_num (i.e., if user logged in during weekdays or weekend) had the least effect in determining the user’s location
 
 NULL HYPOTHESIS TESTING OF MEAN LOGIN TIMES - RESULTS:
 
